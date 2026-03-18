@@ -19,6 +19,10 @@ A lightweight OpenClaw extension that maps per-session IDs to upstream `session_
 
 ## Config
 
+Config file location:
+
+- `~/.openclaw/extensions/openclaw-session-id-bridge/config.json`
+
 ```json
 {
   "proxy": {
