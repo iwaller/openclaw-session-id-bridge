@@ -11,7 +11,7 @@ function buildMarker(sessionId: string): string {
   return `${MARKER_PREFIX}${sessionId}${MARKER_SUFFIX}`;
 }
 
-function resolveConfiguredPort(api: OpenClawPluginApi): string {
+function resolveConfiguredPort(api: OpenClawPluginApi): string | undefined {
   const proxyConfig = (api.pluginConfig && typeof api.pluginConfig === "object")
     ? (api.pluginConfig.proxy as { port?: unknown } | undefined)
     : undefined;
@@ -26,18 +26,19 @@ function resolveConfiguredPort(api: OpenClawPluginApi): string {
     if (Number.isInteger(parsed) && parsed > 0 && parsed <= 65535) return String(parsed);
   }
 
-  return "19090";
+  return undefined;
 }
 
 function startProxy(api: OpenClawPluginApi, logger: { info: (...args: unknown[]) => void; warn: (...args: unknown[]) => void }): void {
   if (proxyProcess && !proxyProcess.killed) return;
 
+  const configuredPort = resolveConfiguredPort(api);
   const proxyPath = join(dirname(api.source), "proxy.mjs");
   const child = spawn(process.execPath, [proxyPath], {
     env: {
       ...process.env,
       CRS_PROXY_HOST: process.env.CRS_PROXY_HOST || "127.0.0.1",
-      CRS_PROXY_PORT: process.env.CRS_PROXY_PORT || resolveConfiguredPort(api),
+      ...(process.env.CRS_PROXY_PORT ? {} : (configuredPort ? { CRS_PROXY_PORT: configuredPort } : {})),
       CRS_PROXY_TARGET_BASE_URL: process.env.CRS_PROXY_TARGET_BASE_URL || "https://crs.plenty126.xyz/openai",
       CRS_PROXY_SESSION_KEY_FIELD: process.env.CRS_PROXY_SESSION_KEY_FIELD || "prompt_cache_key",
       CRS_PROXY_SESSION_HEADER_NAME: process.env.CRS_PROXY_SESSION_HEADER_NAME || "session_id",

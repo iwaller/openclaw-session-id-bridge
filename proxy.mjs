@@ -7,7 +7,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath, URL } from "node:url";
 
 const LISTEN_HOST = process.env.CRS_PROXY_HOST || "127.0.0.1";
-const LISTEN_PORT = Number(process.env.CRS_PROXY_PORT || 19090);
+const ENV_LISTEN_PORT_RAW = process.env.CRS_PROXY_PORT;
 const TARGET_BASE_URL = process.env.CRS_PROXY_TARGET_BASE_URL || "https://crs.plenty126.xyz/openai";
 const PROXY_DIR = dirname(fileURLToPath(import.meta.url));
 const CONFIG_FILE = process.env.CRS_PROXY_CONFIG_FILE || join(PROXY_DIR, "config.json");
@@ -186,6 +186,24 @@ function loadProxyConfigFile() {
 }
 
 const FILE_CONFIG = loadProxyConfigFile();
+
+function parsePortNumber(value) {
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 1 || parsed > 65535) return null;
+  return parsed;
+}
+
+function resolveListenPort() {
+  const envPort = parsePortNumber(ENV_LISTEN_PORT_RAW);
+  if (envPort !== null) return envPort;
+
+  const cfgPort = parsePortNumber(FILE_CONFIG.config?.proxy?.port);
+  if (cfgPort !== null) return cfgPort;
+
+  return 19090;
+}
+
+const LISTEN_PORT = resolveListenPort();
 const ENV_ROUTES_RAW = (process.env.CRS_PROXY_ROUTES_JSON || "").trim();
 const ROUTES_SOURCE = ENV_ROUTES_RAW ? "env:CRS_PROXY_ROUTES_JSON" : FILE_CONFIG.source;
 const DEFAULT_LOG_FILE = join(PROXY_DIR, "proxy.log");

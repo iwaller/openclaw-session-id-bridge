@@ -1,4 +1,7 @@
 {
+  "proxy": {
+    "port": 19090
+  },
   "log": {
     "enabled": false,
     "includeSessionId": false,

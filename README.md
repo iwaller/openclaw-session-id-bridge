@@ -21,6 +21,9 @@ A lightweight OpenClaw extension that maps per-session IDs to upstream `session_
 
 ```json
 {
+  "proxy": {
+    "port": 19090
+  },
   "log": {
     "enabled": false,
     "includeSessionId": false,
@@ -32,6 +35,7 @@ A lightweight OpenClaw extension that maps per-session IDs to upstream `session_
 }
 ```
 
+- `proxy.port`: local proxy listen port (default `19090`)
 - `log.enabled`: enable/disable proxy logs
 - `log.includeSessionId`: include resolved `session_id` in logs (debug only)
 - `log.file`: log file path; relative paths are resolved under extension directory
@@ -47,7 +51,7 @@ openclaw plugins enable openclaw-session-id-bridge
 systemctl --user restart openclaw-gateway
 ```
 
-Optional plugin config (`~/.openclaw/openclaw.json`) to change proxy port:
+Optional override in `~/.openclaw/openclaw.json` (higher priority than `config.json`) to change proxy port:
 
 ```json
 {
