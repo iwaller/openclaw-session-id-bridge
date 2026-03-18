@@ -60,19 +60,6 @@ From local source:
 curl -sS http://127.0.0.1:19090/_health
 ```
 
-## Publish to npm
-
-```bash
-npm login
-npm publish --access public
-```
-
-Then users can install with:
-
-```bash
-openclaw plugins install openclaw-session-id-bridge
-```
-
 ## Notes
 
 - Source priority for session extraction: `x-openclaw-session-id` > system marker > `prompt_cache_key`.
