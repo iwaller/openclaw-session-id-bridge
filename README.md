@@ -39,6 +39,16 @@ A lightweight OpenClaw extension that maps per-session IDs to upstream `session_
 
 ## Install
 
+From npm (recommended after publish):
+
+```bash
+openclaw plugins install openclaw-session-id-bridge
+openclaw plugins enable openclaw-session-id-bridge
+systemctl --user restart openclaw-gateway
+```
+
+From local source:
+
 1. Copy this repo contents to `~/.openclaw/extensions/openclaw-session-id-bridge`.
 2. Enable plugin id `openclaw-session-id-bridge` in `~/.openclaw/openclaw.json`.
 3. Point provider `baseUrl` to local proxy prefix (example: `http://127.0.0.1:19090/provider`).
@@ -48,6 +58,19 @@ A lightweight OpenClaw extension that maps per-session IDs to upstream `session_
 
 ```bash
 curl -sS http://127.0.0.1:19090/_health
+```
+
+## Publish to npm
+
+```bash
+npm login
+npm publish --access public
+```
+
+Then users can install with:
+
+```bash
+openclaw plugins install openclaw-session-id-bridge
 ```
 
 ## Notes

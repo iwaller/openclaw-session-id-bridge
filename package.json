@@ -1,0 +1,37 @@
+{
+  "name": "openclaw-session-id-bridge",
+  "version": "1.0.0",
+  "description": "OpenClaw plugin that bridges per-session IDs to upstream session_id headers via a local proxy.",
+  "license": "MIT",
+  "type": "module",
+  "keywords": [
+    "openclaw",
+    "plugin",
+    "session-id",
+    "proxy"
+  ],
+  "files": [
+    "index.ts",
+    "proxy.mjs",
+    "openclaw.plugin.json",
+    "config.json",
+    "README.md",
+    "LICENSE"
+  ],
+  "openclaw": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/iwaller/openclaw-session-id-bridge.git"
+  },
+  "bugs": {
+    "url": "https://github.com/iwaller/openclaw-session-id-bridge/issues"
+  },
+  "homepage": "https://github.com/iwaller/openclaw-session-id-bridge#readme"
+}
