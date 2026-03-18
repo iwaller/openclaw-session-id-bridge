@@ -1,0 +1,10 @@
+{
+  "log": {
+    "enabled": false,
+    "includeSessionId": false,
+    "file": "proxy.log"
+  },
+  "routes": {
+    "/provider": "https://api.openai.com/v1"
+  }
+}

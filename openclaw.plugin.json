@@ -1,0 +1,8 @@
+{
+  "id": "openclaw-session-id-bridge",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": true,
+    "properties": {}
+  }
+}
