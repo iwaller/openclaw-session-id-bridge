@@ -47,6 +47,25 @@ openclaw plugins enable openclaw-session-id-bridge
 systemctl --user restart openclaw-gateway
 ```
 
+Optional plugin config (`~/.openclaw/openclaw.json`) to change proxy port:
+
+```json
+{
+  "plugins": {
+    "entries": {
+      "openclaw-session-id-bridge": {
+        "enabled": true,
+        "config": {
+          "proxy": {
+            "port": 19091
+          }
+        }
+      }
+    }
+  }
+}
+```
+
 From local source:
 
 1. Copy this repo contents to `~/.openclaw/extensions/openclaw-session-id-bridge`.
