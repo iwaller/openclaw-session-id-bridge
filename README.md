@@ -4,7 +4,7 @@ A lightweight OpenClaw extension that maps per-session IDs to upstream `session_
 
 ## What it does
 
-- Injects a session marker in `before_prompt_build`
+- Injects a session marker in `before_prompt_build` only for requests targeting the local proxy
 - Extracts marker in local proxy and writes upstream header `session_id`
 - Strips marker from payload before forwarding upstream
 - Supports prefix-based multi-provider routing from `config.json`
