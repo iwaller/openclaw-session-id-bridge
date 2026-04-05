@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { OpenClawPluginApi, OpenClawPluginModule } from "openclaw/plugin-sdk";
 
@@ -10,11 +10,14 @@ const DEFAULT_PROXY_PORT = 19090;
 const DEFAULT_PROVIDER_IDS = ["crs"];
 const DEFAULT_SESSION_HEADER_NAME = "session_id";
 const DEFAULT_SOURCE_SESSION_HEADER = "x-openclaw-session-id";
+const DEFAULT_SESSION_PLACEHOLDER = "{{session_id}}";
 
 type Logger = {
   info: (...args: unknown[]) => void;
   warn: (...args: unknown[]) => void;
 };
+
+type BridgeLogFn = (level: "info" | "warn", event: string, details?: Record<string, unknown>) => void;
 
 type BridgeConfigFile = {
   proxy?: {
@@ -29,6 +32,7 @@ type BridgeConfigFile = {
     sourceSessionHeaderName?: unknown;
     setSourceHeader?: unknown;
     requireSourceHeader?: unknown;
+    sessionPlaceholder?: unknown;
     legacyPromptMarker?: unknown;
   };
 };
@@ -43,11 +47,13 @@ type RuntimeConfig = {
   sourceSessionHeaderName: string;
   setSourceHeader: boolean;
   requireSourceHeader: boolean;
+  sessionPlaceholder: string;
   legacyPromptMarker: boolean;
 };
 
 let proxyProcess: ChildProcess | null = null;
 const missingSessionLogByProvider = new Set<string>();
+const placeholderLogByProvider = new Set<string>();
 
 function parsePort(value: unknown): number | null {
   const parsed = Number(value);
@@ -146,6 +152,9 @@ function resolveRuntimeConfig(api: OpenClawPluginApi): RuntimeConfig {
   const envRequireSourceHeader = parseBool(process.env.CRS_BRIDGE_REQUIRE_SOURCE_HEADER);
   const fileRequireSourceHeader = parseBool(fileConfig.bridge?.requireSourceHeader);
 
+  const envSessionPlaceholder = parseString(process.env.CRS_BRIDGE_SESSION_PLACEHOLDER);
+  const fileSessionPlaceholder = parseString(fileConfig.bridge?.sessionPlaceholder);
+
   const envLegacyPromptMarker = parseBool(process.env.CRS_BRIDGE_LEGACY_PROMPT_MARKER);
   const fileLegacyPromptMarker = parseBool(fileConfig.bridge?.legacyPromptMarker);
 
@@ -173,12 +182,36 @@ function resolveRuntimeConfig(api: OpenClawPluginApi): RuntimeConfig {
       envSourceSessionHeaderName ?? fileSourceSessionHeaderName ?? DEFAULT_SOURCE_SESSION_HEADER,
     setSourceHeader,
     requireSourceHeader,
+    sessionPlaceholder: envSessionPlaceholder ?? fileSessionPlaceholder ?? DEFAULT_SESSION_PLACEHOLDER,
     legacyPromptMarker: envLegacyPromptMarker ?? fileLegacyPromptMarker ?? false,
   };
 }
 
 function buildMarker(sessionId: string): string {
   return `${MARKER_PREFIX}${sessionId}${MARKER_SUFFIX}`;
+}
+
+function createBridgeLogger(api: OpenClawPluginApi): BridgeLogFn {
+  const pluginDir = dirname(api.source);
+  const envLogFile = parseString(process.env.CRS_BRIDGE_LOG_FILE);
+  const logFile = envLogFile
+    ? (envLogFile.startsWith("/") ? envLogFile : join(pluginDir, envLogFile))
+    : join(pluginDir, "bridge.log");
+
+  return (level, event, details) => {
+    const line = JSON.stringify({
+      ts: new Date().toISOString(),
+      level,
+      event,
+      ...(details ? { details } : {}),
+    });
+
+    try {
+      appendFileSync(logFile, `${line}\n`, "utf8");
+    } catch {
+      // Do not break requests if local logging fails.
+    }
+  };
 }
 
 function setHeaderIfMissingCaseInsensitive(
@@ -191,7 +224,29 @@ function setHeaderIfMissingCaseInsensitive(
   if (!existing) headers[headerName] = headerValue;
 }
 
-function registerProviderHeaderBridge(api: OpenClawPluginApi, runtimeConfig: RuntimeConfig): void {
+function headersContainPlaceholder(headers: Record<string, string>, placeholder: string): boolean {
+  if (!placeholder) return false;
+  return Object.values(headers).some((value) => typeof value === "string" && value.includes(placeholder));
+}
+
+function replacePlaceholderInHeaders(headers: Record<string, string>, placeholder: string, sessionId: string): number {
+  if (!placeholder || !sessionId) return 0;
+
+  let replaced = 0;
+  for (const [name, value] of Object.entries(headers)) {
+    if (typeof value !== "string" || !value.includes(placeholder)) continue;
+    headers[name] = value.split(placeholder).join(sessionId);
+    replaced += 1;
+  }
+
+  return replaced;
+}
+
+function registerProviderHeaderBridge(
+  api: OpenClawPluginApi,
+  runtimeConfig: RuntimeConfig,
+  bridgeLog: BridgeLogFn,
+): void {
   if (!runtimeConfig.bridgeEnabled) return;
 
   for (const providerId of runtimeConfig.providerIds) {
@@ -212,32 +267,89 @@ function registerProviderHeaderBridge(api: OpenClawPluginApi, runtimeConfig: Run
               : (typeof rawFallback === "number" ? String(rawFallback) : "");
 
           if (!directSessionId && fallbackSessionId && runtimeConfig.requireSourceHeader) {
-            console.warn(
-              `[openclaw-session-id-bridge] strict mode: ignore prompt_cache_key fallback for provider '${providerId}' because options.sessionId is empty`,
-            );
+            const message =
+              `[openclaw-session-id-bridge] strict mode: ignore prompt_cache_key fallback for provider '${providerId}' because options.sessionId is empty`;
+            console.warn(message);
+            bridgeLog("warn", "ignore_prompt_cache_key_fallback", {
+              providerId,
+              fallbackSessionId,
+            });
           }
 
           const sessionId = directSessionId || (runtimeConfig.requireSourceHeader ? "" : fallbackSessionId);
 
+          const headers: Record<string, string> = {
+            ...(options?.headers ?? {}),
+          };
+
           if (!sessionId) {
+            if (headersContainPlaceholder(headers, runtimeConfig.sessionPlaceholder)) {
+              const message =
+                `[openclaw-session-id-bridge] unresolved placeholder '${runtimeConfig.sessionPlaceholder}' for provider '${providerId}' because options.sessionId is empty`;
+              console.warn(message);
+              bridgeLog("warn", "unresolved_placeholder", {
+                providerId,
+                placeholder: runtimeConfig.sessionPlaceholder,
+              });
+            }
+
             if (!missingSessionLogByProvider.has(providerId)) {
               missingSessionLogByProvider.add(providerId);
-              console.warn(
-                `[openclaw-session-id-bridge] missing session id for provider '${providerId}' (options.sessionId empty${runtimeConfig.requireSourceHeader ? "" : "; prompt_cache_key also empty"})`,
-              );
+              const message =
+                `[openclaw-session-id-bridge] missing session id for provider '${providerId}' (options.sessionId empty${runtimeConfig.requireSourceHeader ? "" : "; prompt_cache_key also empty"})`;
+              console.warn(message);
+              bridgeLog("warn", "missing_session_id", {
+                providerId,
+                requireSourceHeader: runtimeConfig.requireSourceHeader,
+              });
             }
+
+            if (runtimeConfig.requireSourceHeader) {
+              const message =
+                `[openclaw-session-id-bridge] strict mode blocked request for provider '${providerId}' because options.sessionId is empty`;
+              bridgeLog("warn", "strict_mode_blocked", {
+                providerId,
+              });
+              throw new Error(message);
+            }
+
             return inner(model, context, options);
           }
 
           if (!directSessionId && fallbackSessionId) {
-            console.warn(
-              `[openclaw-session-id-bridge] provider '${providerId}' fell back to prompt_cache_key because options.sessionId is empty`,
+            const message =
+              `[openclaw-session-id-bridge] provider '${providerId}' fell back to prompt_cache_key because options.sessionId is empty`;
+            console.warn(message);
+            bridgeLog("warn", "fallback_prompt_cache_key", {
+              providerId,
+              sessionId,
+            });
+          }
+
+          // Explicitly print session_id for debugging/tracing at runtime.
+          console.info(`[openclaw-session-id-bridge] provider='${providerId}' session_id='${sessionId}'`);
+          bridgeLog("info", "session_id_resolved", {
+            providerId,
+            sessionId,
+            source: directSessionId ? "options.sessionId" : "prompt_cache_key",
+          });
+
+          const replacedCount = replacePlaceholderInHeaders(headers, runtimeConfig.sessionPlaceholder, sessionId);
+          if (replacedCount > 0 && !placeholderLogByProvider.has(providerId)) {
+            placeholderLogByProvider.add(providerId);
+            console.info(
+              `[openclaw-session-id-bridge] placeholder '${runtimeConfig.sessionPlaceholder}' replaced in ${replacedCount} header(s) for provider '${providerId}'`,
             );
           }
 
-          const headers: Record<string, string> = {
-            ...(options?.headers ?? {}),
-          };
+          if (replacedCount > 0) {
+            bridgeLog("info", "placeholder_replaced", {
+              providerId,
+              placeholder: runtimeConfig.sessionPlaceholder,
+              replacedCount,
+              sessionId,
+            });
+          }
 
           setHeaderIfMissingCaseInsensitive(headers, runtimeConfig.sessionHeaderName, sessionId);
           if (runtimeConfig.setSourceHeader) {
@@ -312,11 +424,20 @@ const plugin: OpenClawPluginModule = {
   register(api: OpenClawPluginApi): void {
     const runtimeConfig = resolveRuntimeConfig(api);
 
-    console.info(
-      `[openclaw-session-id-bridge] init providers=${runtimeConfig.providerIds.join(",")} bridgeEnabled=${runtimeConfig.bridgeEnabled} proxyEnabled=${runtimeConfig.proxyEnabled} requireSourceHeader=${runtimeConfig.requireSourceHeader}`,
-    );
+    const bridgeLog = createBridgeLogger(api);
 
-    registerProviderHeaderBridge(api, runtimeConfig);
+    console.info(
+      `[openclaw-session-id-bridge] init providers=${runtimeConfig.providerIds.join(",")} bridgeEnabled=${runtimeConfig.bridgeEnabled} proxyEnabled=${runtimeConfig.proxyEnabled} requireSourceHeader=${runtimeConfig.requireSourceHeader} sessionPlaceholder=${runtimeConfig.sessionPlaceholder}`,
+    );
+    bridgeLog("info", "init", {
+      providers: runtimeConfig.providerIds,
+      bridgeEnabled: runtimeConfig.bridgeEnabled,
+      proxyEnabled: runtimeConfig.proxyEnabled,
+      requireSourceHeader: runtimeConfig.requireSourceHeader,
+      sessionPlaceholder: runtimeConfig.sessionPlaceholder,
+    });
+
+    registerProviderHeaderBridge(api, runtimeConfig, bridgeLog);
 
     if (runtimeConfig.legacyPromptMarker) {
       api.on("before_prompt_build", async (_event, ctx) => {

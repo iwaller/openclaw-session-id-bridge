@@ -1,6 +1,6 @@
 {
   "proxy": {
-    "enabled": true,
+    "enabled": false,
     "port": 19090
   },
   "bridge": {
@@ -9,9 +9,10 @@
       "crs"
     ],
     "sessionHeaderName": "session_id",
-    "sourceSessionHeaderName": "x-openclaw-session-id",
+    "sourceSessionHeaderName": "session_id",
     "setSourceHeader": true,
     "requireSourceHeader": true,
+    "sessionPlaceholder": "{{session_id}}",
     "legacyPromptMarker": false
   },
   "log": {

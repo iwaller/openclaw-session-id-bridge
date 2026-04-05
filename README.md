@@ -44,6 +44,7 @@ Config file location:
     "sourceSessionHeaderName": "x-openclaw-session-id",
     "setSourceHeader": true,
     "requireSourceHeader": true,
+    "sessionPlaceholder": "{{session_id}}",
     "legacyPromptMarker": false
   },
   "log": {
@@ -61,8 +62,27 @@ Key options:
 
 - `bridge.providers`: provider IDs that should inject session headers (default `crs`)
 - `bridge.requireSourceHeader`: when `true`, proxy rejects requests missing `x-openclaw-session-id`
+- `bridge.sessionPlaceholder`: placeholder token to replace in model headers (default `{{session_id}}`)
 - `bridge.legacyPromptMarker`: disabled by default; keep `false` on modern OpenClaw
 - `log.enabled`: keep `true` to verify runtime behavior during rollout
+
+Example model header placeholder in `~/.openclaw/openclaw.json`:
+
+```json
+{
+  "models": {
+    "providers": {
+      "crs": {
+        "headers": {
+          "x-openclaw-session-id": "{{session_id}}"
+        }
+      }
+    }
+  }
+}
+```
+
+At runtime, the plugin replaces `{{session_id}}` with `options.sessionId` before the HTTP request is sent.
 
 ## Install
 
