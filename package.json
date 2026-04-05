@@ -1,7 +1,7 @@
 {
   "name": "openclaw-session-id-bridge",
-  "version": "1.0.1",
-  "description": "OpenClaw plugin that bridges per-session IDs to upstream session_id headers via a local proxy.",
+  "version": "1.1.0",
+  "description": "OpenClaw plugin that injects runtime session_id headers and optionally routes through a local proxy.",
   "license": "MIT",
   "type": "module",
   "keywords": [

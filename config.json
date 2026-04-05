@@ -1,13 +1,25 @@
 {
   "proxy": {
+    "enabled": true,
     "port": 19090
   },
+  "bridge": {
+    "enabled": true,
+    "providers": [
+      "crs"
+    ],
+    "sessionHeaderName": "session_id",
+    "sourceSessionHeaderName": "x-openclaw-session-id",
+    "setSourceHeader": true,
+    "requireSourceHeader": true,
+    "legacyPromptMarker": false
+  },
   "log": {
-    "enabled": false,
+    "enabled": true,
     "includeSessionId": false,
     "file": "proxy.log"
   },
   "routes": {
-    "/provider": "https://api.openai.com/v1"
+    "/crs": "https://crs.plenty126.xyz/openai"
   }
 }

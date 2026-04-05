@@ -226,6 +226,9 @@ function parseRoutesObject() {
 const ROUTES_OBJECT = parseRoutesObject();
 const LOG_ENABLED = parseBoolEnv("CRS_PROXY_LOG_ENABLED") ?? (FILE_CONFIG.config.log?.enabled === true);
 const LOG_INCLUDE_SESSION_ID = parseBoolEnv("CRS_PROXY_LOG_INCLUDE_SESSION_ID") ?? (FILE_CONFIG.config.log?.includeSessionId === true);
+const REQUIRE_SOURCE_SESSION_HEADER =
+  parseBoolEnv("CRS_PROXY_REQUIRE_SOURCE_SESSION_HEADER") ??
+  (FILE_CONFIG.config.bridge?.requireSourceHeader === true);
 
 function resolveLogFilePath() {
   if (typeof process.env.CRS_PROXY_LOG_FILE === "string" && process.env.CRS_PROXY_LOG_FILE.trim()) {
@@ -255,6 +258,32 @@ function logInfo(event, details) {
   } catch {
     // Keep proxy running even if logging fails.
   }
+}
+
+function logWarn(event, details) {
+  const line = JSON.stringify({
+    ts: new Date().toISOString(),
+    level: "warn",
+    event,
+    ...(details ? { details } : {}),
+  });
+
+  if (LOG_ENABLED) {
+    try {
+      appendFileSync(LOG_FILE, `${line}\n`, "utf8");
+    } catch {
+      // Ignore file logging failures.
+    }
+  }
+
+  // Always emit warnings to stderr so operators can see missing session IDs immediately.
+  console.warn(`[openclaw-session-id-bridge] ${line}`);
+}
+
+function sessionPreview(value) {
+  if (!value) return null;
+  if (value.length <= 12) return value;
+  return `${value.slice(0, 6)}...${value.slice(-4)}`;
 }
 
 function parseRouteEntries() {
@@ -348,7 +377,49 @@ function handleProxyRequest(req, res, originalBodyBuffer) {
   }
 
   const bodyResult = parseAndMaybeSanitizeBody(originalBodyBuffer, req.headers["content-type"]);
+
+  const sourceHeaderValue = getHeaderValue(req.headers, SOURCE_SESSION_HEADER).trim();
+  if (REQUIRE_SOURCE_SESSION_HEADER && !sourceHeaderValue) {
+    logWarn("missing_source_session_header", {
+      method: req.method,
+      path: pathname,
+      requiredHeader: SOURCE_SESSION_HEADER,
+      markerPresent: Boolean(bodyResult.marker),
+      promptCacheKeyPresent: Boolean(bodyResult.promptCacheKey),
+    });
+    sendJson(res, 400, {
+      error: "missing_source_session_header",
+      requiredHeader: SOURCE_SESSION_HEADER,
+    });
+    return;
+  }
+
   const resolved = resolveSessionId(req, bodyResult.marker, bodyResult.promptCacheKey);
+  if (!resolved.value) {
+    logWarn("missing_session_id", {
+      method: req.method,
+      path: pathname,
+      source: resolved.source,
+      markerPresent: Boolean(bodyResult.marker),
+      promptCacheKeyPresent: Boolean(bodyResult.promptCacheKey),
+    });
+    sendJson(res, 400, {
+      error: "missing_session_id",
+      source: resolved.source,
+    });
+    return;
+  }
+
+  if (resolved.source !== SOURCE_SESSION_HEADER) {
+    logWarn("session_id_fallback_source", {
+      method: req.method,
+      path: pathname,
+      source: resolved.source,
+      preferredSource: SOURCE_SESSION_HEADER,
+      sessionPreview: sessionPreview(resolved.value),
+    });
+  }
+
   const headers = buildOutgoingHeaders(req.headers, bodyResult.bodyBuffer, resolved.value);
 
   const targetPath = buildTargetPath(route, pathname);
@@ -363,6 +434,7 @@ function handleProxyRequest(req, res, originalBodyBuffer) {
     upstreamHost: route.target.host,
     sessionSource: resolved.source,
     hasSessionId: Boolean(resolved.value),
+    sessionPreview: sessionPreview(resolved.value),
     ...(LOG_INCLUDE_SESSION_ID ? { sessionId: resolved.value || null } : {}),
   });
 
@@ -414,6 +486,8 @@ const server = http.createServer((req, res) => {
       })),
       sourcePriority: [SOURCE_SESSION_HEADER, "system-marker", SESSION_KEY_FIELD],
       sessionHeaderName: SESSION_HEADER_NAME,
+      sourceSessionHeaderName: SOURCE_SESSION_HEADER,
+      requireSourceSessionHeader: REQUIRE_SOURCE_SESSION_HEADER,
     });
     return;
   }
@@ -463,5 +537,6 @@ server.listen(LISTEN_PORT, LISTEN_HOST, () => {
     routesSource: ROUTES_SOURCE,
     routes: ROUTE_ENTRIES.map((entry) => ({ prefix: entry.prefix, target: entry.target.toString() })),
     sourcePriority: [SOURCE_SESSION_HEADER, "system-marker", SESSION_KEY_FIELD, SESSION_HEADER_NAME],
+    requireSourceSessionHeader: REQUIRE_SOURCE_SESSION_HEADER,
   });
 });

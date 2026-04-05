@@ -7,17 +7,47 @@ const MARKER_PREFIX = "[[OPENCLAW_SESSION_ID:";
 const MARKER_SUFFIX = "]]";
 const DEFAULT_PROXY_HOST = "127.0.0.1";
 const DEFAULT_PROXY_PORT = 19090;
+const DEFAULT_PROVIDER_IDS = ["crs"];
+const DEFAULT_SESSION_HEADER_NAME = "session_id";
+const DEFAULT_SOURCE_SESSION_HEADER = "x-openclaw-session-id";
 
 type Logger = {
   info: (...args: unknown[]) => void;
   warn: (...args: unknown[]) => void;
 };
 
-let proxyProcess: ChildProcess | null = null;
+type BridgeConfigFile = {
+  proxy?: {
+    enabled?: boolean;
+    host?: string;
+    port?: unknown;
+  };
+  bridge?: {
+    enabled?: boolean;
+    providers?: unknown;
+    sessionHeaderName?: unknown;
+    sourceSessionHeaderName?: unknown;
+    setSourceHeader?: unknown;
+    requireSourceHeader?: unknown;
+    legacyPromptMarker?: unknown;
+  };
+};
 
-function buildMarker(sessionId: string): string {
-  return `${MARKER_PREFIX}${sessionId}${MARKER_SUFFIX}`;
-}
+type RuntimeConfig = {
+  proxyEnabled: boolean;
+  proxyHost: string;
+  proxyPort: number;
+  bridgeEnabled: boolean;
+  providerIds: string[];
+  sessionHeaderName: string;
+  sourceSessionHeaderName: string;
+  setSourceHeader: boolean;
+  requireSourceHeader: boolean;
+  legacyPromptMarker: boolean;
+};
+
+let proxyProcess: ChildProcess | null = null;
+const missingSessionLogByProvider = new Set<string>();
 
 function parsePort(value: unknown): number | null {
   const parsed = Number(value);
@@ -25,123 +55,230 @@ function parsePort(value: unknown): number | null {
   return parsed;
 }
 
-function readProxyPortFromConfig(configPath: string): number | null {
-  if (!existsSync(configPath)) return null;
+function parseBool(value: unknown): boolean | undefined {
+  if (typeof value === "boolean") return value;
+  if (typeof value !== "string") return undefined;
+  const normalized = value.trim().toLowerCase();
+  if (!normalized) return undefined;
+  if (normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "on") {
+    return true;
+  }
+  if (normalized === "0" || normalized === "false" || normalized === "no" || normalized === "off") {
+    return false;
+  }
+  return undefined;
+}
+
+function parseString(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  return trimmed || undefined;
+}
+
+function parseStringList(value: unknown): string[] {
+  if (Array.isArray(value)) {
+    return value
+      .map((entry) => parseString(entry))
+      .filter((entry): entry is string => Boolean(entry));
+  }
+
+  if (typeof value === "string") {
+    return value
+      .split(",")
+      .map((entry) => entry.trim())
+      .filter(Boolean);
+  }
+
+  return [];
+}
+
+function dedupe(list: string[]): string[] {
+  return [...new Set(list)];
+}
+
+function readConfig(configPath: string): BridgeConfigFile {
+  if (!existsSync(configPath)) return {};
   try {
     const raw = readFileSync(configPath, "utf8").trim();
-    if (!raw) return null;
-    const parsed = JSON.parse(raw) as { proxy?: { port?: unknown } };
-    return parsePort(parsed?.proxy?.port);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    return parsed as BridgeConfigFile;
   } catch {
-    return null;
+    return {};
   }
 }
 
-function resolveProxyTarget(api: OpenClawPluginApi): { host: string; port: number } {
-  const envPort = parsePort(process.env.CRS_PROXY_PORT);
+function readEnvProviderIds(): string[] {
+  const fromProviderIds = parseStringList(process.env.CRS_BRIDGE_PROVIDER_IDS);
+  const fromProviderId = parseString(process.env.CRS_BRIDGE_PROVIDER_ID);
+  return dedupe([...fromProviderIds, ...(fromProviderId ? [fromProviderId] : [])]);
+}
+
+function resolveRuntimeConfig(api: OpenClawPluginApi): RuntimeConfig {
   const configPath = join(dirname(api.source), "config.json");
-  const configPort = readProxyPortFromConfig(configPath);
+  const fileConfig = readConfig(configPath);
+
+  const envProxyEnabled = parseBool(process.env.CRS_PROXY_ENABLED);
+  const fileProxyEnabled = parseBool(fileConfig.proxy?.enabled);
+
+  const envProxyHost = parseString(process.env.CRS_PROXY_HOST);
+  const fileProxyHost = parseString(fileConfig.proxy?.host);
+
+  const envProxyPort = parsePort(process.env.CRS_PROXY_PORT);
+  const fileProxyPort = parsePort(fileConfig.proxy?.port);
+
+  const envBridgeEnabled = parseBool(process.env.CRS_BRIDGE_ENABLED);
+  const fileBridgeEnabled = parseBool(fileConfig.bridge?.enabled);
+
+  const envProviderIds = readEnvProviderIds();
+  const fileProviderIds = parseStringList(fileConfig.bridge?.providers);
+
+  const envSessionHeaderName = parseString(process.env.CRS_PROXY_SESSION_HEADER_NAME);
+  const fileSessionHeaderName = parseString(fileConfig.bridge?.sessionHeaderName);
+
+  const envSourceSessionHeaderName = parseString(process.env.CRS_PROXY_SOURCE_SESSION_HEADER);
+  const fileSourceSessionHeaderName = parseString(fileConfig.bridge?.sourceSessionHeaderName);
+
+  const envSetSourceHeader = parseBool(process.env.CRS_BRIDGE_SET_SOURCE_HEADER);
+  const fileSetSourceHeader = parseBool(fileConfig.bridge?.setSourceHeader);
+
+  const envRequireSourceHeader = parseBool(process.env.CRS_BRIDGE_REQUIRE_SOURCE_HEADER);
+  const fileRequireSourceHeader = parseBool(fileConfig.bridge?.requireSourceHeader);
+
+  const envLegacyPromptMarker = parseBool(process.env.CRS_BRIDGE_LEGACY_PROMPT_MARKER);
+  const fileLegacyPromptMarker = parseBool(fileConfig.bridge?.legacyPromptMarker);
+
+  const providerIds = dedupe(
+    envProviderIds.length > 0
+      ? envProviderIds
+      : fileProviderIds.length > 0
+        ? fileProviderIds
+        : DEFAULT_PROVIDER_IDS,
+  );
+
+  const requireSourceHeader = envRequireSourceHeader ?? fileRequireSourceHeader ?? true;
+  const setSourceHeader = requireSourceHeader
+    ? true
+    : (envSetSourceHeader ?? fileSetSourceHeader ?? true);
 
   return {
-    host: process.env.CRS_PROXY_HOST || DEFAULT_PROXY_HOST,
-    port: envPort ?? configPort ?? DEFAULT_PROXY_PORT,
+    proxyEnabled: envProxyEnabled ?? fileProxyEnabled ?? true,
+    proxyHost: envProxyHost ?? fileProxyHost ?? DEFAULT_PROXY_HOST,
+    proxyPort: envProxyPort ?? fileProxyPort ?? DEFAULT_PROXY_PORT,
+    bridgeEnabled: envBridgeEnabled ?? fileBridgeEnabled ?? true,
+    providerIds,
+    sessionHeaderName: envSessionHeaderName ?? fileSessionHeaderName ?? DEFAULT_SESSION_HEADER_NAME,
+    sourceSessionHeaderName:
+      envSourceSessionHeaderName ?? fileSourceSessionHeaderName ?? DEFAULT_SOURCE_SESSION_HEADER,
+    setSourceHeader,
+    requireSourceHeader,
+    legacyPromptMarker: envLegacyPromptMarker ?? fileLegacyPromptMarker ?? false,
   };
 }
 
-function normalizeHostCandidates(configuredHost: string): Set<string> {
-  const normalized = (configuredHost || "").trim().toLowerCase();
-  const hostCandidates = new Set<string>();
-
-  if (normalized) hostCandidates.add(normalized);
-
-  // Client-side provider URLs usually target loopback addresses.
-  if (!normalized || normalized === "0.0.0.0" || normalized === "::" || normalized === "::0") {
-    hostCandidates.add("127.0.0.1");
-    hostCandidates.add("localhost");
-    hostCandidates.add("::1");
-    return hostCandidates;
-  }
-
-  if (normalized === "127.0.0.1" || normalized === "localhost" || normalized === "::1") {
-    hostCandidates.add("127.0.0.1");
-    hostCandidates.add("localhost");
-    hostCandidates.add("::1");
-  }
-
-  return hostCandidates;
+function buildMarker(sessionId: string): string {
+  return `${MARKER_PREFIX}${sessionId}${MARKER_SUFFIX}`;
 }
 
-function collectUrlLikeValues(value: unknown, depth = 0, out: string[] = []): string[] {
-  if (value == null || depth > 5) return out;
-
-  if (typeof value === "string") {
-    if (value.includes("://")) out.push(value);
-    return out;
-  }
-
-  if (Array.isArray(value)) {
-    for (const item of value) collectUrlLikeValues(item, depth + 1, out);
-    return out;
-  }
-
-  if (typeof value !== "object") return out;
-
-  for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
-    const lowerKey = key.toLowerCase();
-    if (lowerKey === "input" || lowerKey === "messages" || lowerKey === "content" || lowerKey === "prompt") continue;
-
-    if (typeof child === "string") {
-      if (
-        lowerKey.includes("url") ||
-        lowerKey.includes("endpoint") ||
-        lowerKey.includes("base") ||
-        lowerKey.includes("host")
-      ) {
-        out.push(child);
-      }
-      continue;
-    }
-
-    collectUrlLikeValues(child, depth + 1, out);
-  }
-
-  return out;
+function setHeaderIfMissingCaseInsensitive(
+  headers: Record<string, string>,
+  headerName: string,
+  headerValue: string,
+): void {
+  const lower = headerName.toLowerCase();
+  const existing = Object.keys(headers).some((name) => name.toLowerCase() === lower);
+  if (!existing) headers[headerName] = headerValue;
 }
 
-function isProxyUrl(raw: string, hostCandidates: Set<string>, port: number): boolean {
-  try {
-    const url = new URL(raw);
-    const hostname = url.hostname.toLowerCase();
-    const urlPort = Number(url.port || (url.protocol === "https:" ? 443 : 80));
-    return hostCandidates.has(hostname) && urlPort === port;
-  } catch {
-    return false;
+function registerProviderHeaderBridge(api: OpenClawPluginApi, runtimeConfig: RuntimeConfig): void {
+  if (!runtimeConfig.bridgeEnabled) return;
+
+  for (const providerId of runtimeConfig.providerIds) {
+    api.registerProvider({
+      id: providerId,
+      label: `Session Header Bridge (${providerId})`,
+      auth: [],
+      wrapStreamFn: (ctx) => {
+        const inner = ctx.streamFn;
+        if (!inner) return undefined;
+
+        return (model, context, options) => {
+          const directSessionId = typeof options?.sessionId === "string" ? options.sessionId.trim() : "";
+          const rawFallback = (options as Record<string, unknown> | undefined)?.["prompt_cache_key"];
+          const fallbackSessionId =
+            typeof rawFallback === "string"
+              ? rawFallback.trim()
+              : (typeof rawFallback === "number" ? String(rawFallback) : "");
+
+          if (!directSessionId && fallbackSessionId && runtimeConfig.requireSourceHeader) {
+            console.warn(
+              `[openclaw-session-id-bridge] strict mode: ignore prompt_cache_key fallback for provider '${providerId}' because options.sessionId is empty`,
+            );
+          }
+
+          const sessionId = directSessionId || (runtimeConfig.requireSourceHeader ? "" : fallbackSessionId);
+
+          if (!sessionId) {
+            if (!missingSessionLogByProvider.has(providerId)) {
+              missingSessionLogByProvider.add(providerId);
+              console.warn(
+                `[openclaw-session-id-bridge] missing session id for provider '${providerId}' (options.sessionId empty${runtimeConfig.requireSourceHeader ? "" : "; prompt_cache_key also empty"})`,
+              );
+            }
+            return inner(model, context, options);
+          }
+
+          if (!directSessionId && fallbackSessionId) {
+            console.warn(
+              `[openclaw-session-id-bridge] provider '${providerId}' fell back to prompt_cache_key because options.sessionId is empty`,
+            );
+          }
+
+          const headers: Record<string, string> = {
+            ...(options?.headers ?? {}),
+          };
+
+          setHeaderIfMissingCaseInsensitive(headers, runtimeConfig.sessionHeaderName, sessionId);
+          if (runtimeConfig.setSourceHeader) {
+            setHeaderIfMissingCaseInsensitive(headers, runtimeConfig.sourceSessionHeaderName, sessionId);
+          }
+
+          return inner(model, context, {
+            ...options,
+            headers,
+          });
+        };
+      },
+    });
   }
 }
 
-function shouldInjectForRequest(event: unknown, ctx: unknown, proxyTarget: { host: string; port: number }): boolean {
-  const hostCandidates = normalizeHostCandidates(proxyTarget.host);
-  const candidates = collectUrlLikeValues({ event, ctx });
-  if (candidates.length === 0) return false;
-  return candidates.some((value) => isProxyUrl(value, hostCandidates, proxyTarget.port));
-}
+function startProxy(api: OpenClawPluginApi, logger: Logger, runtimeConfig: RuntimeConfig): void {
+  if (!runtimeConfig.proxyEnabled) {
+    logger.info("[openclaw-session-id-bridge] proxy disabled by config");
+    return;
+  }
 
-function startProxy(api: OpenClawPluginApi, logger: Logger): void {
   if (proxyProcess && !proxyProcess.killed) return;
   const proxyPath = join(dirname(api.source), "proxy.mjs");
   const child = spawn(process.execPath, [proxyPath], {
     env: {
       ...process.env,
-      CRS_PROXY_HOST: process.env.CRS_PROXY_HOST || "127.0.0.1",
-
-      CRS_PROXY_TARGET_BASE_URL: process.env.CRS_PROXY_TARGET_BASE_URL || "https://crs.plenty126.xyz/openai",
+      CRS_PROXY_HOST: runtimeConfig.proxyHost,
+      CRS_PROXY_PORT: String(runtimeConfig.proxyPort),
+      CRS_PROXY_SESSION_HEADER_NAME: runtimeConfig.sessionHeaderName,
+      CRS_PROXY_SOURCE_SESSION_HEADER: runtimeConfig.sourceSessionHeaderName,
+      CRS_PROXY_REQUIRE_SOURCE_SESSION_HEADER: runtimeConfig.requireSourceHeader ? "1" : "0",
       CRS_PROXY_SESSION_KEY_FIELD: process.env.CRS_PROXY_SESSION_KEY_FIELD || "prompt_cache_key",
-      CRS_PROXY_SESSION_HEADER_NAME: process.env.CRS_PROXY_SESSION_HEADER_NAME || "session_id",
-      CRS_PROXY_SOURCE_SESSION_HEADER: process.env.CRS_PROXY_SOURCE_SESSION_HEADER || "x-openclaw-session-id",
       CRS_PROXY_MAX_BODY_BYTES: process.env.CRS_PROXY_MAX_BODY_BYTES || "20971520",
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
+
+  logger.info(
+    `[openclaw-session-id-bridge] proxy start host=${runtimeConfig.proxyHost} port=${runtimeConfig.proxyPort} sessionHeader=${runtimeConfig.sessionHeaderName} sourceHeader=${runtimeConfig.sourceSessionHeaderName} requireSourceHeader=${runtimeConfig.requireSourceHeader}`,
+  );
 
   child.stdout?.on("data", (buf) => {
     logger.info(`[openclaw-session-id-bridge] ${String(buf).trimEnd()}`);
@@ -151,7 +288,9 @@ function startProxy(api: OpenClawPluginApi, logger: Logger): void {
   });
 
   child.on("exit", (code, signal) => {
-    logger.warn(`[openclaw-session-id-bridge] proxy exited (code=${code ?? "null"}, signal=${signal ?? "null"})`);
+    logger.warn(
+      `[openclaw-session-id-bridge] proxy exited (code=${code ?? "null"}, signal=${signal ?? "null"})`,
+    );
     if (proxyProcess === child) proxyProcess = null;
   });
 
@@ -168,24 +307,30 @@ function stopProxy(logger: Logger): void {
 const plugin: OpenClawPluginModule = {
   id: "openclaw-session-id-bridge",
   name: "OpenClaw Session ID Bridge",
-  description: "Injects per-session marker and runs a local proxy to map OpenClaw session ID to upstream session_id header.",
+  description:
+    "Injects per-request session_id headers from OpenClaw sessionId and optionally runs a local routing proxy.",
   register(api: OpenClawPluginApi): void {
-    const proxyTarget = resolveProxyTarget(api);
+    const runtimeConfig = resolveRuntimeConfig(api);
 
-    api.on("before_prompt_build", async (event, ctx) => {
-      if (!ctx.sessionId) return;
-      if (!shouldInjectForRequest(event, ctx, proxyTarget)) return;
+    console.info(
+      `[openclaw-session-id-bridge] init providers=${runtimeConfig.providerIds.join(",")} bridgeEnabled=${runtimeConfig.bridgeEnabled} proxyEnabled=${runtimeConfig.proxyEnabled} requireSourceHeader=${runtimeConfig.requireSourceHeader}`,
+    );
 
-      return {
-        // The proxy strips this marker before forwarding upstream.
-        prependSystemContext: buildMarker(ctx.sessionId),
-      };
-    });
+    registerProviderHeaderBridge(api, runtimeConfig);
+
+    if (runtimeConfig.legacyPromptMarker) {
+      api.on("before_prompt_build", async (_event, ctx) => {
+        if (!ctx.sessionId) return;
+        return {
+          prependSystemContext: buildMarker(ctx.sessionId),
+        };
+      });
+    }
 
     api.registerService({
       id: "openclaw-session-id-bridge-proxy",
       start: async (ctx) => {
-        startProxy(api, ctx.logger);
+        startProxy(api, ctx.logger, runtimeConfig);
       },
       stop: async (ctx) => {
         stopProxy(ctx.logger);
