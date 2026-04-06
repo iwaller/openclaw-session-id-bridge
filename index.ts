@@ -166,7 +166,7 @@ function resolveRuntimeConfig(api: OpenClawPluginApi): RuntimeConfig {
         : DEFAULT_PROVIDER_IDS,
   );
 
-  const requireSourceHeader = envRequireSourceHeader ?? fileRequireSourceHeader ?? true;
+  const requireSourceHeader = envRequireSourceHeader ?? fileRequireSourceHeader ?? false;
   const setSourceHeader = requireSourceHeader
     ? true
     : (envSetSourceHeader ?? fileSetSourceHeader ?? true);
@@ -266,17 +266,7 @@ function registerProviderHeaderBridge(
               ? rawFallback.trim()
               : (typeof rawFallback === "number" ? String(rawFallback) : "");
 
-          if (!directSessionId && fallbackSessionId && runtimeConfig.requireSourceHeader) {
-            const message =
-              `[openclaw-session-id-bridge] strict mode: ignore prompt_cache_key fallback for provider '${providerId}' because options.sessionId is empty`;
-            console.warn(message);
-            bridgeLog("warn", "ignore_prompt_cache_key_fallback", {
-              providerId,
-              fallbackSessionId,
-            });
-          }
-
-          const sessionId = directSessionId || (runtimeConfig.requireSourceHeader ? "" : fallbackSessionId);
+          const sessionId = directSessionId || fallbackSessionId;
 
           const headers: Record<string, string> = {
             ...(options?.headers ?? {}),
@@ -296,21 +286,12 @@ function registerProviderHeaderBridge(
             if (!missingSessionLogByProvider.has(providerId)) {
               missingSessionLogByProvider.add(providerId);
               const message =
-                `[openclaw-session-id-bridge] missing session id for provider '${providerId}' (options.sessionId empty${runtimeConfig.requireSourceHeader ? "" : "; prompt_cache_key also empty"})`;
+                `[openclaw-session-id-bridge] missing session id for provider '${providerId}' (options.sessionId and prompt_cache_key are empty)`;
               console.warn(message);
               bridgeLog("warn", "missing_session_id", {
                 providerId,
                 requireSourceHeader: runtimeConfig.requireSourceHeader,
               });
-            }
-
-            if (runtimeConfig.requireSourceHeader) {
-              const message =
-                `[openclaw-session-id-bridge] strict mode blocked request for provider '${providerId}' because options.sessionId is empty`;
-              bridgeLog("warn", "strict_mode_blocked", {
-                providerId,
-              });
-              throw new Error(message);
             }
 
             return inner(model, context, options);

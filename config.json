@@ -11,7 +11,7 @@
     "sessionHeaderName": "session_id",
     "sourceSessionHeaderName": "session_id",
     "setSourceHeader": true,
-    "requireSourceHeader": true,
+    "requireSourceHeader": false,
     "sessionPlaceholder": "{{session_id}}",
     "legacyPromptMarker": false
   },

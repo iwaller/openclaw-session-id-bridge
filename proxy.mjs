@@ -380,6 +380,7 @@ function handleProxyRequest(req, res, originalBodyBuffer) {
 
   const sourceHeaderValue = getHeaderValue(req.headers, SOURCE_SESSION_HEADER).trim();
   if (REQUIRE_SOURCE_SESSION_HEADER && !sourceHeaderValue) {
+    // Keep observability when strict mode is requested, but do not reject requests.
     logWarn("missing_source_session_header", {
       method: req.method,
       path: pathname,
@@ -387,11 +388,6 @@ function handleProxyRequest(req, res, originalBodyBuffer) {
       markerPresent: Boolean(bodyResult.marker),
       promptCacheKeyPresent: Boolean(bodyResult.promptCacheKey),
     });
-    sendJson(res, 400, {
-      error: "missing_source_session_header",
-      requiredHeader: SOURCE_SESSION_HEADER,
-    });
-    return;
   }
 
   const resolved = resolveSessionId(req, bodyResult.marker, bodyResult.promptCacheKey);

@@ -7,9 +7,9 @@ A lightweight OpenClaw extension that ensures upstream requests receive a real `
 - Uses provider `wrapStreamFn` to read OpenClaw `options.sessionId` directly.
 - Injects request headers on every model call:
   - `session_id`
-  - `x-openclaw-session-id` (source header for strict verification)
+  - `x-openclaw-session-id` (optional source header for diagnostics)
 - Optional local proxy can still do route fan-out (`/crs` -> real upstream).
-- Strict mode can reject requests that do not carry `x-openclaw-session-id`.
+- Missing source header is logged but no longer blocks requests.
 - Adds explicit diagnostics so you can confirm session ID resolution path.
 
 ## Why this is better
@@ -43,7 +43,7 @@ Config file location:
     "sessionHeaderName": "session_id",
     "sourceSessionHeaderName": "x-openclaw-session-id",
     "setSourceHeader": true,
-    "requireSourceHeader": true,
+    "requireSourceHeader": false,
     "sessionPlaceholder": "{{session_id}}",
     "legacyPromptMarker": false
   },
@@ -61,7 +61,7 @@ Config file location:
 Key options:
 
 - `bridge.providers`: provider IDs that should inject session headers (default `crs`)
-- `bridge.requireSourceHeader`: when `true`, proxy rejects requests missing `x-openclaw-session-id`
+- `bridge.requireSourceHeader`: when `true`, proxy logs missing source header but still forwards requests
 - `bridge.sessionPlaceholder`: placeholder token to replace in model headers (default `{{session_id}}`)
 - `bridge.legacyPromptMarker`: disabled by default; keep `false` on modern OpenClaw
 - `log.enabled`: keep `true` to verify runtime behavior during rollout
@@ -101,7 +101,7 @@ From local source:
 curl -sS http://127.0.0.1:19090/_health
 ```
 
-2. Confirm strict mode is active:
+2. Confirm source-header diagnostics are active (optional):
 
 - `requireSourceSessionHeader: true`
 - `sourceSessionHeaderName: "x-openclaw-session-id"`
@@ -114,11 +114,11 @@ tail -f ~/.openclaw/extensions/openclaw-session-id-bridge/proxy.log
 
 Look for:
 
-- `event: "proxy_request"` with `sessionSource: "x-openclaw-session-id"`
-- No `missing_source_session_header`
-- No `session_id_fallback_source`
+- `event: "proxy_request"`
+- Optional `missing_source_session_header` diagnostics when source header is absent
+- Optional `session_id_fallback_source` diagnostics when fallback source is used
 
 ## Notes
 
-- The bridge still supports fallback extraction (`system-marker`, `prompt_cache_key`) for compatibility, but strict mode is intended to enforce real source-header usage.
-- If OpenClaw runtime ever stops providing `options.sessionId`, `index.ts` prints a warning and the proxy logs `missing_source_session_header` in strict mode.
+- The bridge supports fallback extraction (`system-marker`, `prompt_cache_key`) for compatibility.
+- If OpenClaw runtime ever stops providing `options.sessionId`, `index.ts` prints a warning and the proxy logs fallback diagnostics.
